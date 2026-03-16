@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.local
+.env*.local
+
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Next.js
+web/.next/
+web/out/
+
+# Build output
+web/build/
+
+# Pipeline output (dati generati, non da versionare)
+pipeline-output.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
