@@ -237,7 +237,7 @@ NON riassumere una singola testata. Il brief DEVE confrontare le coperture di TU
 Usa un tono giornalistico, asciutto ma non freddo. Scrivi in italiano. Inizia direttamente con il contenuto, senza intestazioni.`
 }
 
-const GEMINI_DELAY_MS = 2000
+const GEMINI_DELAY_MS = 1000
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -338,6 +338,35 @@ export async function generateBrief(recaps: RecapResult[], apiKey: string): Prom
   const genai = new GoogleGenerativeAI(apiKey)
   const model = genai.getGenerativeModel({ model: GEMINI_MODEL })
   return callGemini(model, buildBriefPrompt(recaps))
+}
+
+// ─── Brief from DB ────────────────────────────────────────────────────────────
+
+// Genera il brief leggendo i recap già salvati oggi nel DB (usato dall'ultimo batch cron)
+export async function generateBriefFromDb(date: string, apiKey: string): Promise<string | null> {
+  if (!apiKey) return null
+  const admin = createAdminClient()
+
+  const { data: rows } = await admin
+    .from('daily_recaps')
+    .select('headlines, newspapers(name, country, orientation, slug)')
+    .eq('date', date)
+
+  if (!rows || rows.length === 0) return null
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fakeRecaps: RecapResult[] = (rows as any[]).map(row => ({
+    newspaper: {
+      slug: row.newspapers.slug,
+      name: row.newspapers.name,
+      country: row.newspapers.country,
+      orientation: row.newspapers.orientation,
+    } as PipelineNewspaper,
+    items: [],
+    recap: { headlines: row.headlines ?? [] },
+  }))
+
+  return generateBrief(fakeRecaps, apiKey)
 }
 
 // ─── Supabase Save ────────────────────────────────────────────────────────────
