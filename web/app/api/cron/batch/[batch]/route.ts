@@ -72,23 +72,28 @@ export async function GET(
     .map(s => (newspapers as PipelineNewspaper[]).find(n => n.slug === s))
     .filter(Boolean) as PipelineNewspaper[]
 
+  // Processa tutte le testate in parallelo per stare nei 60s di Vercel Hobby
+  const settled = await Promise.allSettled(
+    ordered.map(async np => {
+      const { items } = await scrape(np)
+      if (items.length === 0) throw new Error('No items')
+      const recap = await generateRecap(np, items, geminiKey)
+      return { newspaper: np, items, recap } as RecapResult
+    })
+  )
+
   const results: { slug: string; status: 'ok' | 'error'; error?: string }[] = []
   const recapResults: RecapResult[] = []
 
-  for (const np of ordered) {
-    try {
-      const { items } = await scrape(np)
-      if (items.length === 0) {
-        results.push({ slug: np.slug, status: 'error', error: 'No items' })
-        continue
-      }
-      const recap = await generateRecap(np, items, geminiKey)
-      recapResults.push({ newspaper: np, items, recap })
-      results.push({ slug: np.slug, status: 'ok' })
-    } catch (err) {
-      results.push({ slug: np.slug, status: 'error', error: err instanceof Error ? err.message : String(err) })
+  settled.forEach((outcome, i) => {
+    const slug = ordered[i].slug
+    if (outcome.status === 'fulfilled') {
+      recapResults.push(outcome.value)
+      results.push({ slug, status: 'ok' })
+    } else {
+      results.push({ slug, status: 'error', error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason) })
     }
-  }
+  })
 
   // Salva recap del batch
   const successful = recapResults.filter(r => 'headlines' in r.recap)

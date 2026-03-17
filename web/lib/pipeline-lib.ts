@@ -237,19 +237,7 @@ NON riassumere una singola testata. Il brief DEVE confrontare le coperture di TU
 Usa un tono giornalistico, asciutto ma non freddo. Scrivi in italiano. Inizia direttamente con il contenuto, senza intestazioni.`
 }
 
-const GEMINI_DELAY_MS = 1000
-
-function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-let lastGeminiCall = 0
-
 async function callGemini(model: ReturnType<InstanceType<typeof GoogleGenerativeAI>['getGenerativeModel']>, prompt: string): Promise<string> {
-  const now = Date.now()
-  const wait = GEMINI_DELAY_MS - (now - lastGeminiCall)
-  if (wait > 0) await sleep(wait)
-  lastGeminiCall = Date.now()
   const result = await model.generateContent(prompt)
   return result.response.text().trim()
 }
