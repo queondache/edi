@@ -375,22 +375,28 @@ export async function saveToSupabase(
   recaps: RecapResult[],
   briefText: string | null,
   date: string
-): Promise<void> {
+): Promise<{ saveErrors: string[] }> {
   const admin = createAdminClient()
+  const saveErrors: string[] = []
 
   // Upsert daily_recaps
   for (const r of recaps) {
     if ('dry_run' in r.recap) continue
 
     // Look up newspaper UUID by slug
-    const { data: np } = await admin
+    const { data: np, error: npError } = await admin
       .from('newspapers')
       .select('id')
       .eq('slug', r.newspaper.slug)
       .single()
 
+    if (npError) {
+      saveErrors.push(`lookup ${r.newspaper.slug}: ${npError.message}`)
+      continue
+    }
+
     if (!np) {
-      console.warn(`Newspaper not found in DB: ${r.newspaper.slug}`)
+      saveErrors.push(`not found in DB: ${r.newspaper.slug}`)
       continue
     }
 
@@ -401,7 +407,7 @@ export async function saveToSupabase(
       generated_at: new Date().toISOString(),
     }, { onConflict: 'newspaper_id,date' })
 
-    if (error) console.error(`Error saving recap for ${r.newspaper.slug}:`, error.message)
+    if (error) saveErrors.push(`upsert ${r.newspaper.slug}: ${error.message}`)
   }
 
   // Upsert daily_brief
@@ -412,6 +418,8 @@ export async function saveToSupabase(
       generated_at: new Date().toISOString(),
     }, { onConflict: 'date' })
 
-    if (error) console.error('Error saving brief:', error.message)
+    if (error) saveErrors.push(`upsert brief: ${error.message}`)
   }
+
+  return { saveErrors }
 }

@@ -92,7 +92,7 @@ export async function GET(
 
   // Salva recap del batch
   const successful = recapResults.filter(r => 'headlines' in r.recap)
-  await saveToSupabase(successful, null, date)
+  const { saveErrors } = await saveToSupabase(successful, null, date)
 
   // Batch 4: genera il brief dai recap di tutti i batch già in DB
   let brief: string | null = null
@@ -112,6 +112,7 @@ export async function GET(
     date,
     ok: results.filter(r => r.status === 'ok').length,
     errors: results.filter(r => r.status === 'error').length,
+    saveErrors,
     ...(batch === '4' ? { brief: brief ? brief.slice(0, 100) + '…' : null } : {}),
     results,
   })
