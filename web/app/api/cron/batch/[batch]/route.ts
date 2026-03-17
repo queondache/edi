@@ -34,7 +34,13 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { batch } = await params
+  let batch: string
+  try {
+    batch = (await params).batch
+  } catch (e) {
+    return NextResponse.json({ error: 'params error', detail: String(e) }, { status: 500 })
+  }
+
   const slugs = BATCHES[batch]
   if (!slugs) {
     return NextResponse.json({ error: `Batch "${batch}" non esiste` }, { status: 400 })
@@ -44,7 +50,13 @@ export async function GET(
   const date = new Date().toISOString().split('T')[0]
 
   // Carica le testate del batch da Supabase
-  const admin = createAdminClient()
+  let admin: ReturnType<typeof createAdminClient>
+  try {
+    admin = createAdminClient()
+  } catch (e) {
+    return NextResponse.json({ error: 'createAdminClient failed', detail: String(e) }, { status: 500 })
+  }
+
   const { data: newspapers, error } = await admin
     .from('newspapers')
     .select('*')
