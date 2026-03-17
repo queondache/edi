@@ -14,8 +14,8 @@ const parseXML = promisify(parseString)
 
 export const GEMINI_MODEL = 'gemini-2.5-flash'
 const MAX_ITEMS_PER_FEED = 10
-const JINA_TIMEOUT_MS = 25000
-const RSS_TIMEOUT_MS = 10000
+const JINA_TIMEOUT_MS = 12000
+const RSS_TIMEOUT_MS = 8000
 
 export interface PipelineNewspaper {
   id?: string
