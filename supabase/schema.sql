@@ -64,6 +64,21 @@ create table if not exists public.daily_briefs (
   generated_at    timestamptz default now()
 );
 
+-- ─── pipeline_costs ──────────────────────────────────────────────────────────
+-- Traccia il costo AI di ogni generazione (recap per testata + brief giornaliero).
+-- I token vengono salvati grezzi; il costo EUR viene calcolato lato API con prezzi aggiornabili.
+create table if not exists public.pipeline_costs (
+  id                uuid primary key default uuid_generate_v4(),
+  date              date not null,
+  newspaper_id      uuid references public.newspapers(id) on delete cascade,  -- NULL per il brief
+  cost_type         text not null check (cost_type in ('recap', 'brief')),
+  prompt_tokens     integer not null default 0,
+  completion_tokens integer not null default 0,
+  total_tokens      integer not null default 0,
+  created_at        timestamptz default now(),
+  unique (date, newspaper_id, cost_type)
+);
+
 -- ─── RLS (Row Level Security) ─────────────────────────────────────────────────
 alter table public.newspapers     enable row level security;
 alter table public.user_profiles  enable row level security;
@@ -89,6 +104,11 @@ create policy "daily_recaps_public_read" on public.daily_recaps
 
 -- daily_briefs: lettura pubblica
 create policy "daily_briefs_public_read" on public.daily_briefs
+  for select using (true);
+
+-- pipeline_costs: lettura pubblica (trasparenza totale)
+alter table public.pipeline_costs enable row level security;
+create policy "pipeline_costs_public_read" on public.pipeline_costs
   for select using (true);
 
 -- ─── Trigger: updated_at ──────────────────────────────────────────────────────

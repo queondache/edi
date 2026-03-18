@@ -113,6 +113,91 @@ function BriefCard({ text }: { text: string }) {
   )
 }
 
+// ─── Cost transparency banner ────────────────────────────────────────────────
+
+interface CostData {
+  date: string
+  totalCostEur: number
+  userCostEur: number
+  totalReaders: number
+  breakdown: { slug: string; name: string; costEur: number; followers: number; userShareEur: number }[]
+  brief: { costEur: number; activeUsers: number; userShareEur: number } | null
+}
+
+function CostBanner({ slugs }: { slugs: string[] }) {
+  const [data, setData] = useState<CostData | null>(null)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    if (slugs.length === 0) return
+    const params = new URLSearchParams({ slugs: slugs.join(',') })
+    fetch(`/api/costs?${params}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && d.userCostEur > 0) setData(d) })
+      .catch(() => {})
+  }, [slugs])
+
+  if (!data || data.userCostEur === 0) return null
+
+  const formatCost = (eur: number) => {
+    if (eur < 0.01) return `€${(eur * 100).toFixed(2)} cent`
+    return `€${eur.toFixed(4)}`
+  }
+
+  return (
+    <div className="mt-8 mb-4">
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full text-left"
+      >
+        <div className="flex items-center justify-between px-1">
+          <p className="text-white/25 text-xs leading-relaxed">
+            La tua rassegna di oggi ha generato <span className="text-white/40 font-medium">{formatCost(data.userCostEur)}</span> di costi AI, condivisi tra {data.totalReaders} {data.totalReaders === 1 ? 'lettore' : 'lettori'}.
+          </p>
+          <svg
+            className={`w-3 h-3 text-white/20 ml-2 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="mt-3 bg-white/5 border border-white/10 rounded-xl p-4 space-y-2">
+          <p className="text-white/30 text-[11px] uppercase tracking-widest font-semibold mb-2">Dettaglio costi</p>
+
+          {data.breakdown
+            .filter(b => b.userShareEur > 0)
+            .map(b => (
+              <div key={b.slug} className="flex items-center justify-between text-xs">
+                <span className="text-white/40">
+                  {b.name} <span className="text-white/20">({b.followers} {b.followers === 1 ? 'lettore' : 'lettori'})</span>
+                </span>
+                <span className="text-white/30 font-mono">{formatCost(b.userShareEur)}</span>
+              </div>
+            ))
+          }
+
+          {data.brief && (
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-white/40">
+                Brief del giorno <span className="text-white/20">({data.brief.activeUsers} lettori)</span>
+              </span>
+              <span className="text-white/30 font-mono">{formatCost(data.brief.userShareEur)}</span>
+            </div>
+          )}
+
+          <div className="pt-2 mt-2 border-t border-white/5 flex items-center justify-between text-xs">
+            <span className="text-white/30">Costo totale piattaforma oggi</span>
+            <span className="text-white/40 font-mono font-medium">{formatCost(data.totalCostEur)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function NewspaperPlaceholder({ newspaper }: { newspaper: Newspaper }) {
   return (
     <div className="mb-5 border border-white/10 rounded-2xl overflow-hidden">
@@ -286,6 +371,7 @@ export default function HomePage() {
   const [items, setItems] = useState<{ newspaper: Newspaper; recap: DailyRecap | null }[]>([])
   const [briefText, setBriefText] = useState('')
   const [loading, setLoading] = useState(true)
+  const [selectedSlugs, setSelectedSlugs] = useState<string[]>([])
 
   useEffect(() => {
     const done = localStorage.getItem('edi_onboarding_done')
@@ -293,6 +379,8 @@ export default function HomePage() {
 
     const profile = JSON.parse(localStorage.getItem('edi_profile') || '{}')
     const selectedSlugs: string[] = profile.selectedNewspaperSlugs ?? []
+
+    setSelectedSlugs(selectedSlugs)
 
     const selectedNewspapers = selectedSlugs.length > 0
       ? ALL_NEWSPAPERS.filter(n => selectedSlugs.includes(n.slug))
@@ -391,6 +479,9 @@ export default function HomePage() {
             )
           )}
         </div>
+
+        {/* Cost transparency banner */}
+        <CostBanner slugs={selectedSlugs} />
 
       </div>
     </div>

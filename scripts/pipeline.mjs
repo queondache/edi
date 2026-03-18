@@ -224,17 +224,24 @@ ${headlines}`;
 
 async function generateRecap(newspaper, items) {
   if (!genai) {
-    return { dry_run: true, raw_items: items.slice(0, 5) };
+    return { recap: { dry_run: true, raw_items: items.slice(0, 5) } };
   }
 
   const model = genai.getGenerativeModel({ model: GEMINI_MODEL });
   const prompt = buildRecapPrompt(newspaper, items);
   const result = await model.generateContent(prompt);
-  const text = result.response.text().trim();
+  const response = result.response;
+  const text = response.text().trim();
+  const usage = response.usageMetadata;
+  const tokenUsage = {
+    promptTokens: usage?.promptTokenCount ?? 0,
+    completionTokens: usage?.candidatesTokenCount ?? 0,
+    totalTokens: usage?.totalTokenCount ?? 0,
+  };
 
   const jsonMatch = text.match(/\{[\s\S]+\}/);
   if (!jsonMatch) throw new Error('Risposta AI non è JSON valido');
-  return JSON.parse(jsonMatch[0]);
+  return { recap: JSON.parse(jsonMatch[0]), tokenUsage };
 }
 
 // ─── Daily Brief ──────────────────────────────────────────────────────────────
@@ -262,7 +269,16 @@ async function generateBrief(recaps) {
 
   const model = genai.getGenerativeModel({ model: GEMINI_MODEL });
   const result = await model.generateContent(buildBriefPrompt(recaps));
-  return { brief_text: result.response.text().trim() };
+  const response = result.response;
+  const usage = response.usageMetadata;
+  return {
+    brief_text: response.text().trim(),
+    tokenUsage: {
+      promptTokens: usage?.promptTokenCount ?? 0,
+      completionTokens: usage?.candidatesTokenCount ?? 0,
+      totalTokens: usage?.totalTokenCount ?? 0,
+    },
+  };
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -296,8 +312,12 @@ for (const newspaper of targets) {
     });
 
     process.stdout.write('\n  Generazione recap... ');
-    const recap = await generateRecap(newspaper, items);
+    const { recap, tokenUsage } = await generateRecap(newspaper, items);
     console.log('✅');
+
+    if (tokenUsage) {
+      console.log(`  Token: ${tokenUsage.promptTokens} in / ${tokenUsage.completionTokens} out / ${tokenUsage.totalTokens} tot`);
+    }
 
     if (recap.dry_run) {
       console.log('\n  [DRY RUN] Headline grezze (no API key):');
@@ -311,7 +331,7 @@ for (const newspaper of targets) {
       });
     }
 
-    recapResults.push({ newspaper, items, recap });
+    recapResults.push({ newspaper, items, recap, tokenUsage });
 
   } catch (err) {
     console.log(`❌ Errore: ${err.message}`);
@@ -320,6 +340,7 @@ for (const newspaper of targets) {
 
 // Brief del giorno
 let briefText = null;
+let briefTokenUsage = null;
 if (recapResults.length > 0) {
   console.log(`\n${'═'.repeat(60)}`);
   console.log('🌅 BRIEF DEL GIORNO (cross-testata)');
@@ -331,7 +352,11 @@ if (recapResults.length > 0) {
       console.log('\n  [DRY RUN] Brief non generato (no API key).');
     } else {
       briefText = brief.brief_text;
+      briefTokenUsage = brief.tokenUsage;
       console.log(`\n${brief.brief_text}`);
+      if (briefTokenUsage) {
+        console.log(`\n  Token brief: ${briefTokenUsage.promptTokens} in / ${briefTokenUsage.completionTokens} out / ${briefTokenUsage.totalTokens} tot`);
+      }
     }
   } catch (err) {
     console.log(`❌ Errore brief: ${err.message}`);
@@ -398,6 +423,19 @@ if (supabase && recapResults.length > 0) {
       } else {
         console.log(`  ✅ ${r.newspaper.name}: ${r.recap.headlines?.length ?? 0} headline salvate`);
       }
+
+      // Save token usage
+      if (r.tokenUsage) {
+        const { error: costError } = await supabase.from('pipeline_costs').upsert({
+          date,
+          newspaper_id: np.id,
+          cost_type: 'recap',
+          prompt_tokens: r.tokenUsage.promptTokens,
+          completion_tokens: r.tokenUsage.completionTokens,
+          total_tokens: r.tokenUsage.totalTokens,
+        }, { onConflict: 'date,newspaper_id,cost_type' });
+        if (costError) console.log(`  ⚠️  Cost ${r.newspaper.name}: ${costError.message}`);
+      }
     } catch (err) {
       console.log(`  ❌ ${r.newspaper.name}: ${err.message}`);
     }
@@ -410,6 +448,19 @@ if (supabase && recapResults.length > 0) {
       generated_at: new Date().toISOString(),
     }, { onConflict: 'date' });
     console.log(error ? `  ❌ Brief: ${error.message}` : '  ✅ Brief salvato');
+
+    // Save brief cost
+    if (briefTokenUsage) {
+      const { error: costError } = await supabase.from('pipeline_costs').upsert({
+        date,
+        newspaper_id: null,
+        cost_type: 'brief',
+        prompt_tokens: briefTokenUsage.promptTokens,
+        completion_tokens: briefTokenUsage.completionTokens,
+        total_tokens: briefTokenUsage.totalTokens,
+      }, { onConflict: 'date,newspaper_id,cost_type' });
+      if (costError) console.log(`  ⚠️  Cost brief: ${costError.message}`);
+    }
   }
 } else if (!supabase) {
   console.log('\n⚠️  Supabase non configurato (NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY mancanti) — skip save.');

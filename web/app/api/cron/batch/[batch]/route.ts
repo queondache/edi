@@ -6,6 +6,7 @@ import {
   generateBriefFromDb,
   saveToSupabase,
   RecapResult,
+  BriefResult,
   PipelineNewspaper,
 } from '@/lib/pipeline-lib'
 
@@ -77,8 +78,8 @@ export async function GET(
     ordered.map(async np => {
       const { items } = await scrape(np)
       if (items.length === 0) throw new Error('No items')
-      const recap = await generateRecap(np, items, geminiKey)
-      return { newspaper: np, items, recap } as RecapResult
+      const { recap, tokenUsage } = await generateRecap(np, items, geminiKey)
+      return { newspaper: np, items, recap, tokenUsage } as RecapResult
     })
   )
 
@@ -95,22 +96,16 @@ export async function GET(
     }
   })
 
-  // Salva recap del batch
+  // Salva recap del batch (briefResult = null per batch 1-3)
   const successful = recapResults.filter(r => 'headlines' in r.recap)
-  const { saveErrors } = await saveToSupabase(successful, null, date)
+  let briefResult: BriefResult | null = null
 
   // Batch 4: genera il brief dai recap di tutti i batch già in DB
-  let brief: string | null = null
   if (batch === '4') {
-    brief = await generateBriefFromDb(date, geminiKey).catch(() => null)
-    if (brief) {
-      const adminClient = createAdminClient()
-      await adminClient.from('daily_briefs').upsert(
-        { date, brief_text: brief, generated_at: new Date().toISOString() },
-        { onConflict: 'date' }
-      )
-    }
+    briefResult = await generateBriefFromDb(date, geminiKey).catch(() => ({ text: null }))
   }
+
+  const { saveErrors } = await saveToSupabase(successful, briefResult, date)
 
   return NextResponse.json({
     batch,
@@ -118,7 +113,7 @@ export async function GET(
     ok: results.filter(r => r.status === 'ok').length,
     errors: results.filter(r => r.status === 'error').length,
     saveErrors,
-    ...(batch === '4' ? { brief: brief ? brief.slice(0, 100) + '…' : null } : {}),
+    ...(batch === '4' ? { brief: briefResult?.text ? briefResult.text.slice(0, 100) + '…' : null } : {}),
     results,
   })
 }

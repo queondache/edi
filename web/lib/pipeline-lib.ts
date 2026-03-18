@@ -45,10 +45,22 @@ export interface Headline {
   topic: string
 }
 
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
 export interface RecapResult {
   newspaper: PipelineNewspaper
   items: RawItem[]
   recap: { headlines: Headline[] } | { dry_run: true; raw_items: RawItem[] }
+  tokenUsage?: TokenUsage
+}
+
+export interface BriefResult {
+  text: string | null
+  tokenUsage?: TokenUsage
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -237,9 +249,18 @@ NON riassumere una singola testata. Il brief DEVE confrontare le coperture di TU
 Usa un tono giornalistico, asciutto ma non freddo. Scrivi in italiano. Inizia direttamente con il contenuto, senza intestazioni.`
 }
 
-async function callGemini(model: ReturnType<InstanceType<typeof GoogleGenerativeAI>['getGenerativeModel']>, prompt: string): Promise<string> {
+async function callGemini(model: ReturnType<InstanceType<typeof GoogleGenerativeAI>['getGenerativeModel']>, prompt: string): Promise<{ text: string; tokenUsage: TokenUsage }> {
   const result = await model.generateContent(prompt)
-  return result.response.text().trim()
+  const response = result.response
+  const usage = response.usageMetadata
+  return {
+    text: response.text().trim(),
+    tokenUsage: {
+      promptTokens: usage?.promptTokenCount ?? 0,
+      completionTokens: usage?.candidatesTokenCount ?? 0,
+      totalTokens: usage?.totalTokenCount ?? 0,
+    },
+  }
 }
 
 function sanitizeJson(raw: string): string {
@@ -304,35 +325,36 @@ export async function generateRecap(
   newspaper: PipelineNewspaper,
   items: RawItem[],
   apiKey: string
-): Promise<{ headlines: Headline[] } | { dry_run: true; raw_items: RawItem[] }> {
-  if (!apiKey) return { dry_run: true, raw_items: items.slice(0, 5) }
+): Promise<{ recap: { headlines: Headline[] } | { dry_run: true; raw_items: RawItem[] }; tokenUsage?: TokenUsage }> {
+  if (!apiKey) return { recap: { dry_run: true, raw_items: items.slice(0, 5) } }
 
   const genai = new GoogleGenerativeAI(apiKey)
   const model = genai.getGenerativeModel({ model: GEMINI_MODEL })
-  const text = await callGemini(model, buildRecapPrompt(newspaper, items))
+  const { text, tokenUsage } = await callGemini(model, buildRecapPrompt(newspaper, items))
 
   try {
-    return JSON.parse(sanitizeJson(text))
+    return { recap: JSON.parse(sanitizeJson(text)), tokenUsage }
   } catch {
     const fallback = extractHeadlinesFallback(text)
-    if (fallback) return fallback
+    if (fallback) return { recap: fallback, tokenUsage }
     throw new Error('Risposta AI non parsabile (sanitize + fallback regex entrambi falliti)')
   }
 }
 
-export async function generateBrief(recaps: RecapResult[], apiKey: string): Promise<string | null> {
-  if (!apiKey || recaps.length === 0) return null
+export async function generateBrief(recaps: RecapResult[], apiKey: string): Promise<BriefResult> {
+  if (!apiKey || recaps.length === 0) return { text: null }
 
   const genai = new GoogleGenerativeAI(apiKey)
   const model = genai.getGenerativeModel({ model: GEMINI_MODEL })
-  return callGemini(model, buildBriefPrompt(recaps))
+  const { text, tokenUsage } = await callGemini(model, buildBriefPrompt(recaps))
+  return { text, tokenUsage }
 }
 
 // ─── Brief from DB ────────────────────────────────────────────────────────────
 
 // Genera il brief leggendo i recap già salvati oggi nel DB (usato dall'ultimo batch cron)
-export async function generateBriefFromDb(date: string, apiKey: string): Promise<string | null> {
-  if (!apiKey) return null
+export async function generateBriefFromDb(date: string, apiKey: string): Promise<BriefResult> {
+  if (!apiKey) return { text: null }
   const admin = createAdminClient()
 
   const { data: rows } = await admin
@@ -340,7 +362,7 @@ export async function generateBriefFromDb(date: string, apiKey: string): Promise
     .select('headlines, newspapers(name, country, orientation, slug)')
     .eq('date', date)
 
-  if (!rows || rows.length === 0) return null
+  if (!rows || rows.length === 0) return { text: null }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fakeRecaps: RecapResult[] = (rows as any[]).map(row => ({
@@ -361,13 +383,13 @@ export async function generateBriefFromDb(date: string, apiKey: string): Promise
 
 export async function saveToSupabase(
   recaps: RecapResult[],
-  briefText: string | null,
+  briefResult: BriefResult | null,
   date: string
 ): Promise<{ saveErrors: string[] }> {
   const admin = createAdminClient()
   const saveErrors: string[] = []
 
-  // Upsert daily_recaps
+  // Upsert daily_recaps + pipeline_costs
   for (const r of recaps) {
     if ('dry_run' in r.recap) continue
 
@@ -396,17 +418,44 @@ export async function saveToSupabase(
     }, { onConflict: 'newspaper_id,date' })
 
     if (error) saveErrors.push(`upsert ${r.newspaper.slug}: ${error.message}`)
+
+    // Save token usage for this recap
+    if (r.tokenUsage) {
+      const { error: costError } = await admin.from('pipeline_costs').upsert({
+        date,
+        newspaper_id: np.id,
+        cost_type: 'recap',
+        prompt_tokens: r.tokenUsage.promptTokens,
+        completion_tokens: r.tokenUsage.completionTokens,
+        total_tokens: r.tokenUsage.totalTokens,
+      }, { onConflict: 'date,newspaper_id,cost_type' })
+
+      if (costError) saveErrors.push(`cost ${r.newspaper.slug}: ${costError.message}`)
+    }
   }
 
-  // Upsert daily_brief
-  if (briefText) {
+  // Upsert daily_brief + its cost
+  if (briefResult?.text) {
     const { error } = await admin.from('daily_briefs').upsert({
       date,
-      brief_text: briefText,
+      brief_text: briefResult.text,
       generated_at: new Date().toISOString(),
     }, { onConflict: 'date' })
 
     if (error) saveErrors.push(`upsert brief: ${error.message}`)
+
+    if (briefResult.tokenUsage) {
+      const { error: costError } = await admin.from('pipeline_costs').upsert({
+        date,
+        newspaper_id: null,
+        cost_type: 'brief',
+        prompt_tokens: briefResult.tokenUsage.promptTokens,
+        completion_tokens: briefResult.tokenUsage.completionTokens,
+        total_tokens: briefResult.tokenUsage.totalTokens,
+      }, { onConflict: 'date,newspaper_id,cost_type' })
+
+      if (costError) saveErrors.push(`cost brief: ${costError.message}`)
+    }
   }
 
   return { saveErrors }

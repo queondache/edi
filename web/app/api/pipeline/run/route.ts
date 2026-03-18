@@ -9,6 +9,7 @@ import {
   PipelineNewspaper,
 } from '@/lib/pipeline-lib'
 
+
 // Protect with a secret to avoid accidental public triggering
 const PIPELINE_SECRET = process.env.PIPELINE_SECRET
 
@@ -54,8 +55,8 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      const recap = await generateRecap(np, items, geminiKey)
-      recapResults.push({ newspaper: np, items, recap })
+      const { recap, tokenUsage } = await generateRecap(np, items, geminiKey)
+      recapResults.push({ newspaper: np, items, recap, tokenUsage })
 
       const headlineCount = 'headlines' in recap ? recap.headlines.length : 0
       results.push({ slug: np.slug, name: np.name, status: 'ok', headlines: headlineCount })
@@ -67,14 +68,14 @@ export async function POST(request: NextRequest) {
 
   // Generate brief
   const successfulRecaps = recapResults.filter(r => 'headlines' in r.recap)
-  const briefText = await generateBrief(successfulRecaps, geminiKey).catch(() => null)
+  const briefResult = await generateBrief(successfulRecaps, geminiKey).catch(() => ({ text: null }))
 
-  // Save everything to Supabase
-  await saveToSupabase(successfulRecaps, briefText, date)
+  // Save everything to Supabase (recaps + brief + costs)
+  await saveToSupabase(successfulRecaps, briefResult, date)
 
   return NextResponse.json({
     date,
-    brief: briefText ? briefText.slice(0, 120) + '…' : null,
+    brief: briefResult.text ? briefResult.text.slice(0, 120) + '…' : null,
     processed: results.length,
     ok: results.filter(r => r.status === 'ok').length,
     errors: results.filter(r => r.status === 'error').length,
