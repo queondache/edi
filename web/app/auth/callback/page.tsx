@@ -9,62 +9,55 @@ export default function AuthCallbackPage() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    const supabase = createClient()
+    handleCallback()
 
-    // Il browser client ha accesso al code_verifier PKCE nei cookie.
-    // Supabase SSR gestisce automaticamente lo scambio code→session
-    // quando detecta i parametri nell'URL (code, o hash fragment).
-    // Usiamo onAuthStateChange per aspettare che la sessione sia pronta.
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event) => {
-        if (event === 'SIGNED_IN') {
-          // Sessione attiva — check onboarding
-          const { data: { user } } = await supabase.auth.getUser()
-          if (user) {
-            const { data: profile } = await supabase
-              .from('user_profiles')
-              .select('onboarding_completed')
-              .eq('id', user.id)
-              .single()
-
-            if (!profile?.onboarding_completed) {
-              router.replace('/onboarding')
-              return
-            }
-          }
-          router.replace('/home')
-        }
-      }
-    )
-
-    // Fallback: se dopo 5 secondi non è successo niente, prova exchange manuale
-    const timeout = setTimeout(async () => {
+    async function handleCallback() {
+      const supabase = createClient()
       const params = new URLSearchParams(window.location.search)
       const code = params.get('code')
 
-      if (code) {
-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
-        if (exchangeError) {
-          console.error('Exchange error:', exchangeError.message)
-          setError(exchangeError.message)
-          setTimeout(() => router.replace('/login?error=auth_failed'), 2000)
+      if (!code) {
+        // Nessun code nell'URL — potrebbe essere hash fragment (implicit flow)
+        // oppure link non valido
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) {
+          redirectUser(supabase)
+          return
         }
-        // Se exchange riesce, onAuthStateChange si attiverà
-      } else {
-        // Nessun code — forse è un hash fragment (implicit flow) o link non valido
-        const hash = window.location.hash
-        if (!hash) {
-          setError('Link non valido')
-          setTimeout(() => router.replace('/login?error=auth_failed'), 2000)
-        }
-        // Se c'è un hash, @supabase/ssr lo gestisce automaticamente
+        setError('Link non valido o scaduto')
+        setTimeout(() => router.replace('/login'), 2000)
+        return
       }
-    }, 1500)
 
-    return () => {
-      subscription.unsubscribe()
-      clearTimeout(timeout)
+      // Scambio code → session (PKCE)
+      const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+
+      if (exchangeError) {
+        console.error('Auth exchange error:', exchangeError.message)
+        setError(`Errore: ${exchangeError.message}`)
+        setTimeout(() => router.replace('/login'), 3000)
+        return
+      }
+
+      // Sessione creata con successo
+      redirectUser(supabase)
+    }
+
+    async function redirectUser(supabase: ReturnType<typeof createClient>) {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: profile } = await supabase
+          .from('user_profiles')
+          .select('onboarding_completed')
+          .eq('id', user.id)
+          .single()
+
+        if (!profile?.onboarding_completed) {
+          router.replace('/onboarding')
+          return
+        }
+      }
+      router.replace('/home')
     }
   }, [router])
 
@@ -74,6 +67,7 @@ export default function AuthCallbackPage() {
         <div className="text-center">
           <p className="text-red-400 text-sm mb-2">Errore di autenticazione</p>
           <p className="text-white/30 text-xs">{error}</p>
+          <p className="text-white/20 text-xs mt-4">Reindirizzamento al login...</p>
         </div>
       ) : (
         <div className="text-center">
